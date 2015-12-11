@@ -3,10 +3,10 @@
 
 # In[ ]:
 
+#By Toshiki Nazikian
 
 
-
-# In[24]:
+# In[7]:
 
 import xml.etree.cElementTree as ET
 import pprint, collections, os, codecs, re, json
@@ -15,6 +15,8 @@ from pymongo import MongoClient, InsertOne
 from collections import OrderedDict, defaultdict
 import pandas as pd
 import numpy as np
+from yelp.client import Client
+from yelp.oauth1_authenticator import Oauth1Authenticator
 
 
 ns = ["name","street"]
@@ -133,6 +135,7 @@ mapping = {"California:CA"
            "Kfc": "KFC",
            "Cvs": "CVS",
            "Wk": "Walk",
+           "Ave":"Avenue",
            "Subway Sandwiches": "Subway",
            "Starbucks Coffee": "Starbucks"
            }
@@ -153,12 +156,9 @@ class Mapparser:
         self.data = {}
         self._tags = {}
         self._tags['prob'] = {}
-        self.lower = re.compile(r'^([a-z]|_)*$')
-        self.lower_colon = re.compile(r'^([a-z]|_)*:([a-z]|_)*$')
         self.filternames = re.compile(r"city$|housename|postcode|cuisine|housenumber|^name$|amenity|st$|st.$|bridge|:street|street|county$|^county$", flags=re.I)
         self.addrnames = re.compile(r"city$|postcode|housenumber|st$|st.$|:street|street|county$|^county$", flags=re.I)
         self.problemchars = re.compile(r'[=\+/&<>;\'"\?%#$@\,\. \t\r\n]')
-        self.tigers = re.compile(r"tiger:")
         self.CREATED = [ "version", "changeset", "timestamp", "user", "uid"]
         self.excluded = [ "version", "changeset", "timestamp", "user", "uid", "lat", "lon", "id"]
         self.process_map(filename, pretty=False)
@@ -170,10 +170,7 @@ class Mapparser:
         for i, word in enumerate(name):
             if word in mapping.keys():
                 name[i] = mapping[word]
-        return (' '.join(name))
-        
-            
-            
+        return (' '.join(name))         
 
     def shape_element(self, element):
         node = {}
@@ -326,20 +323,76 @@ client = MongoClient('mongodb://localhost:27017/')
 db = client.examples
 #db.small_posts.remove({})
 #Mongo_import()
+regexnom = re.compile("^[0-9]{5}$")
+regex2 = re.compile("[0-9]{5}")
+regex3 = re.compile("korea", re.I)
 pipeline = [
-    {"$match": {"amenity":{"$exists":1}, "$and":[{"pos.lat":{"$gt":32.8134, "$lt":32.8383}}, {"pos.lon":{"$gt":-117.1693, "$lt":-117.1353}}]}},
-    {"$group": {"_id": "$amenity", "count": {"$sum": 1}}},
+    {"$match": {"cuisine":{"$exists":1}, "$and":[{"pos.lat":{"$gt":32.8134, "$lt":32.8383}}, {"pos.lon":{"$gt":-117.1693, "$lt":-117.1353}}]}},
+    {"$group": {"_id": "$cuisine", "count": {"$sum": 1}}},
     {"$sort": {"count":-1}},
     {"$limit":20}
 ]
+#for item in db.small_posts.aggregate(pipeline):
+#    print(item)
 
 
-convy = db.small_posts.aggregate(pipeline)
+auth = Oauth1Authenticator(
+    consumer_key='euRoSNdzW1kkXx1L2gPkPw',
+    consumer_secret='BCwNni4t5zpGRcawJ8qV9gCZHm8',
+    token='CZ3vGtoBG5c374aid__YGXeVjIhak2PN',
+    token_secret='baz9l7uLI08z6HqsXYLcF2JrgqQ'
+)
+yelp_client = Client(auth)
+
+params = {
+    'term': 'fast food'
+}
+
+def aligner(name):
+    for i, word in enumerate(name):
+        if word in mapping.keys():
+            name[i] = mapping[word]
+    return (' '.join(name))
+
+yelp_results = yelp_client.search('Convoy Street, San Diego, CA', **params)
+for item in yelp_results.businesses:
+    existing = False
+    loc = item.location
+    if db.small_posts.find_one({"name":item.name, "pos.lon":item.location.coordinate.longitude, "pos.lat":item.location.coordinate.latitude}):
+        existing = True
+    if not item.is_closed:
+        try:                                                                                 
+                                                                                                                                     
+            node_fmtd['type'] = 'node'
+            node_fmtd['pos'] = {}
+            node_fmtd['pos']['lat'] = float(item.location.coordinate.latitude)
+            node_fmtd['pos']['lon'] = float(item.location.coordinate.longitude)
+            node_fmtd['name'] = item.name
+            node_fmtd['amenity'] = 'fast food'
+            if node_fmtd['amenity'] in ["restaurant", "cafe"]:
+                node_fmtd['cuisine'] = item.categories[0].name
+            node_fmtd['address'] = {}
+            node_fmtd['address']['street'] = aligner((item.location.address[0]).split())
+            if item.location.cross_streets:
+                node_fmtd['address']['cross_streets'] = aligner((loc.cross_streets).split())
+            node_fmtd['address']['postcode'] = item.location.postal_code
+            node_fmtd['address']['neighborhoods'] = item.location.neighborhoods 
+            if existing is True:
+                db.small_posts.update_one({"name":node_fmtd['name'], "pos":node_fmtd['pos']}, {"$set":{"amenity":node_fmtd['amenity']}})
+            else:
+                db.small_posts.insert_one(node_fmtd)
+        except KeyError:
+            pass
+
+#    item.location.coordinate.__dict__
+#convy = db.small_posts.aggregate(pipeline)
 #print(convy.count())
-for i in convy:
-    print(i)
-print("done")
-#for item in db.posts.find():
+#for i in convy:
+#    print i
+#print("done")
+#for item in db.small_posts.find({"name":{"$exists":1}}):
+#    if (item['name']).isdigit():
+#        db.small_posts.update_one({"_id":item["_id"]}, {"$unset":{item["name"]: ""}})
 #    db.posts.update_one({"_id": item["_id"]}, {"$set":{"num_fields":len(item)}})
 #db.posts.update_many({"name":"Starbucks Coffee"}, 
 #    {"$set": {"amenity":"cafe"}})
@@ -353,7 +406,7 @@ print("done")
 
 
 
-#for event, elem in ET.iterparse("C:\Users\Toshiki_Nazikian\Downloads\San-Diego_California.osm"):
+#for event, elem in ET.iterparse("C:\Users\Toshiki_Nazikian\Downloads\SD_city.osm"):
 #    if i < 50:
 #        i += 1
 #        print(elem.attrib, elem.tag)
@@ -377,26 +430,10 @@ print("done")
 #print (t.timeit())
 
 
-#pprint(data)
-    
-#if __name__ == "__main__":
+
+# In[76]:
 
 
-#for i in x:
-    #print(i)
-#index = 0
-#for i in x:
-    #print(i)
-    #index += 1
-    # try:
-    #    print(i.address)
-    #except AttributeError:
-    #    print("Element {0} has no address".format(index))
-    
-
-    #c = Mapparser("C:\Users\Toshiki_Nazikian\Downloads\chicago_illinois.osm")
-    #data = c.datas
-    #print(data)
 
 
 # In[ ]:
